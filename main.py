@@ -9,7 +9,7 @@ import ccxt.async_support as ccxt
 from typing import List
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
-from config import AMOUNT, LEVERAGE
+from config import AMOUNT, LEVERAGE, set_rokada_status, get_rokada_status
 from orderbook import filter_walls, detect_trend
 from levels import generate_signals
 import time
@@ -27,7 +27,7 @@ load_dotenv()
 #
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8888", "http://192.168.68.100:8888"],
+    allow_origins=["http://127.0.0.1:8000", "http://192.168.68.100:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,7 +40,6 @@ ws_clients: List[WebSocket] = []  # Lista aktivnih WebSocket klijenata
 last_bids = []
 last_asks = []
 active_trades = []
-rokada_status_global = "off"
 cached_data = None
 bot_running = False
 leverage = 1
@@ -91,6 +90,15 @@ exchange = ccxt.binance({
     'enableRateLimit': True,
 })
 
+
+async def fetch_current_data():
+    orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)  # Smanjen limit
+    current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
+    walls = filter_walls(orderbook, current_price)
+    trend = detect_trend(orderbook, current_price)
+    return current_price, walls, trend
+
+
 # WebSocket konekcija sa Binance-om
 async def connect_binance_ws():
     while True:
@@ -108,6 +116,9 @@ async def connect_binance_ws():
                         except asyncio.TimeoutError:
                             logger.info("Šaljem ping poruku Binance WebSocket-u")
                             await ws.ping()
+                        except Exception as e:
+                            logger.error(f"Greška u WebSocket obradi: {str(e)}")
+                            break
         except Exception as e:
             logger.error(f"Greška u Binance WebSocket konekciji: {str(e)}")
             await asyncio.sleep(5)
@@ -156,11 +167,7 @@ async def websocket_endpoint(websocket: WebSocket):
             walls = filter_walls(orderbook, current_price)
             trend = detect_trend(orderbook, current_price)
 
-            # Automatski uključivanje Rokade ako postoje zidovi
-            if walls['support'] or walls['resistance']:
-                set_rokada_status("on")
-
-            signals = generate_signals(current_price, walls, trend, rokada_status_global)
+            signals = generate_signals(current_price, walls, trend)
 
             updated_trades = []
             for trade in active_trades:
@@ -178,7 +185,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 'resistance_walls': walls['resistance'],
                 'trend': trend,
                 'signals': signals,
-                'rokada_status': rokada_status_global,
+                'rokada_status': get_rokada_status,
                 'active_trades': updated_trades,
                 'ws_latency': round((time.time() - current_time) * 1000, 2),
                 'debug': {
@@ -235,55 +242,60 @@ async def startBot(data: dict):
     return {'status': 'success', 'leverage': leverage, 'amount': trade_amount}
 
 
-def get_rokada_status():
-    global rokada_status_global
-    return rokada_status_global
 
-def set_rokada_status(status: str):
-    global rokada_status_global
-    if status.lower() in ["on", "off"]:
-        rokada_status_global = status.lower()
-        logger.info(f"Rokada status changed to: {rokada_status_global}")
-        return True
-    logger.warning(f"Invalid rokada status attempt: {status}")
-    return False
 
-@app.get('/set_rokada/{status}')
-async def set_rokada(status: str):
+@app.post('/set_rokada')
+async def set_rokada(data: dict):
+    status = data.get('status')
     logger.info(f"Received request to set rokada status to: {status}")
     success = set_rokada_status(status)
     if success:
-        current_price, walls, trend = await fetch_current_data()
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)
+        current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
+        walls = filter_walls(orderbook, current_price)
+        trend = detect_trend(orderbook, current_price)
         signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
         return {'status': get_rokada_status(), 'signals': signals}
     return {'error': 'Status mora biti "on" ili "off"'}
+
+# @app.get('/set_rokada/{status}')
+# async def set_rokada(status: str):
+#     logger.info(f"Received request to set rokada status to: {status}")
+#     success = set_rokada_status(status)
+#     if success:
+#         current_price, walls, trend = await fetch_current_data()
+#         signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
+#         return {'status': get_rokada_status(), 'signals': signals}
+#     return {'error': 'Status mora biti "on" ili "off"'}
 
 
 
 @app.get('/get_data')
 async def get_data():
     global cached_data
-    if cached_data and (time.time() - cached_data['timestamp'] < 5):  # Smanjeno keširanje
+    if cached_data and (time.time() - cached_data['timestamp'] < 5):
         logger.info("Vraćam keširane podatke")
         return cached_data['data']
 
     try:
-        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)  # Smanjen limit
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)
         current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
         walls = filter_walls(orderbook, current_price)
         trend = detect_trend(orderbook, current_price)
         signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
         exchange.options['defaultType'] = 'future'
+        logger.info("Pokusavam ocitati balans...")
         balance = await exchange.fetch_balance()
-        eth_balance = balance['ETH']['free'] if 'ETH' in balance else 0
-        btc_balance = balance['BTC']['free'] if 'BTC' in balance else 0
-        usdt_balance = balance['USDT']['free'] if 'USDT' in balance else 0
+        logger.info(f"Balans: {balance}")
+        eth_balance = balance.get('ETH', {}).get('free', 0)
+        btc_balance = balance.get('BTC', {}).get('free', 0)
+        usdt_balance = balance.get('USDT', {}).get('free', 0)
 
         data = {
             "price": current_price,
             "support": len(walls.get("support", [])),
             "resistance": len(walls.get("resistance", [])),
-            "support_walls": walls.get("supportPhillips@, []"),
+            "support_walls": walls.get("support", []),
             "resistance_walls": walls.get("resistance", []),
             "trend": trend,
             "signals": signals,
@@ -355,15 +367,24 @@ async def start_trade(signal_index: int):
 
 
 
-
 @app.post('/stop_bot')
 async def stopBot():
     global bot_running
     if not bot_running:
+        logger.warning("Bot is not running")
         return {'status': 'error', 'message': 'Bot is not running'}
     bot_running = False
     logger.info("Bot stopped")
     return {'status': 'success'}
+
+# @app.post('/stop_bot')
+# async def stopBot():
+#     global bot_running
+#     if not bot_running:
+#         return {'status': 'error', 'message': 'Bot is not running'}
+#     bot_running = False
+#     logger.info("Bot stopped")
+#     return {'status': 'success'}
 
 
 
