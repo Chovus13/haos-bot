@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Haos Bot</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        #header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: #2c2c2c;
+            padding: 10px 20px;
+            border-bottom: 1px solid #444;
+        }
+        #bot-name {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        #log-container {
+            flex-grow: 1;
+            margin: 0 20px;
+            max-height: 40px;
+            overflow-y: auto;
+            font-size: 0.9em;
+            color: #a0a0a0;
+        }
+        #latency {
+            font-size: 1em;
+            color: #00ff00;
+            display: flex;
+            gap: 10px;
+        }
+        #controls {
+            margin: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4a4a4a;
+            color: #e0e0e0;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #5a5a5a;
+        }
+        button:disabled {
+            background-color: #333;
+            cursor: not-allowed;
+        }
+        input {
+            padding: 8px;
+            background-color: #333;
+            color: #e0e0e0;
+            border: 1px solid #555;
+            border-radius: 5px;
+        }
+        #data-container {
+            margin: 20px;
+            padding: 20px;
+            background-color: #2c2c2c;
+            border-radius: 5px;
+        }
+        .error {
+            color: #ff5555;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <div id="bot-name">Haos Bot</div>
+        <div id="log-container"></div>
+        <div id="latency">
+            <span>WS Latency: <span id="ws-latency">N/A</span> ms</span>
+            <span>REST Latency: <span id="rest-latency">N/A</span> ms</span>
+        </div>
+    </div>
+
+    <div id="controls">
+        <button id="start-btn" onclick="startBot()">Start Bot</button>
+        <button id="stop-btn" onclick="stopBot()">Stop Bot</button>
+        <button id="rokada-btn" onclick="setRokada()">Toggle Rokada</button>
+        <label for="leverage">Leverage:</label>
+        <input type="number" id="leverage" value="10" min="1" max="100">
+        <label for="amount">Amount (ETH):</label>
+        <input type="number" id="amount" value="0.06" min="0.01" step="0.01">
+        <span id="error-message" class="error"></span>
+    </div>
+
+    <div id="data-container">
+        <h2>Bot Data</h2>
+        <p>Price: <span id="price">N/A</span></p>
+        <p>Support: <span id="support">N/A</span></p>
+        <p>Resistance: <span id="resistance">N/A</span></p>
+        <p>Trend: <span id="trend">N/A</span></p>
+        <p>Balance: <span id="balance">N/A</span> <span id="balance-currency"></span></p>
+        <p>Extra Balances: BTC: <span id="extra-btc">N/A</span>, USDT: <span id="extra-usdt">0.0</span></p>
+        <p>Rokada Status: <span id="rokada-status">N/A</span></p>
+        <p>Active Trades: <span id="active-trades">N/A</span></p>
+        <p>Signals: <span id="signals">N/A</span></p>
+    </div>
+
+    <script>
+        let ws = null;
+        let botRunning = false;
+        let logs = [];
+
+        function connectWebSocket() {
+            const wsUrl = 'ws://' + window.location.host + '/ws';
+            console.log('Connecting to WebSocket:', wsUrl);
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                logs.push('WebSocket connected');
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+            };
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'data') {
+                        document.getElementById('price').innerText = data.price || 'N/A';
+                        document.getElementById('support').innerText = data.support || 'N/A';
+                        document.getElementById('resistance').innerText = data.resistance || 'N/A';
+                        document.getElementById('trend').innerText = data.trend || 'N/A';
+                        document.getElementById('balance').innerText = data.balance || 'N/A';
+                        document.getElementById('balance-currency').innerText = data.balance_currency || '';
+                        document.getElementById('extra-btc').innerText = data.extra_balances?.BTC || 'N/A';
+                        document.getElementById('extra-usdt').innerText = (data.extra_balances?.USDT !== undefined ? data.extra_balances.USDT : '0.0');
+                        document.getElementById('rokada-status').innerText = data.rokada_status || 'N/A';
+                        document.getElementById('active-trades').innerText = JSON.stringify(data.active_trades) || 'N/A';
+                        document.getElementById('signals').innerText = JSON.stringify(data.signals) || 'N/A';
+                        document.getElementById('ws-latency').innerText = data.ws_latency || 'N/A';
+                        document.getElementById('rest-latency').innerText = data.rest_latency || 'N/A';
+                    } else if (data.type === 'log') {
+                        logs.push(data.message);
+                        if (logs.length > 5) logs.shift();
+                        document.getElementById('log-container').innerHTML = logs.join('<br>');
+                    }
+                } catch (error) {
+                    console.error('Error parsing WebSocket message:', error);
+                    logs.push('Error parsing WebSocket message');
+                    document.getElementById('log-container').innerHTML = logs.join('<br>');
+                }
+            };
+            ws.onclose = () => {
+                logs.push('WebSocket disconnected, reconnecting...');
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+                setTimeout(connectWebSocket, 5000);
+            };
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                logs.push('WebSocket error occurred');
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+            };
+        }
+
+        async function startBot() {
+            if (botRunning) return;
+            const leverage = document.getElementById('leverage').value;
+            const amount = document.getElementById('amount').value;
+            const errorMessage = document.getElementById('error-message');
+            errorMessage.innerText = '';
+
+            try {
+                const url = '/start_bot';
+                console.log('Sending request to:', url, { leverage, amount });
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ leverage: parseInt(leverage), amount: parseFloat(amount) })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Start Bot response:', result);
+                if (result.status === 'success') {
+                    botRunning = true;
+                    document.getElementById('start-btn').disabled = true;
+                    document.getElementById('stop-btn').disabled = false;
+                    logs.push('Bot started successfully');
+                    document.getElementById('log-container').innerHTML = logs.join('<br>');
+                } else {
+                    errorMessage.innerText = result.message;
+                    logs.push(`Error: ${result.message}`);
+                    document.getElementById('log-container').innerHTML = logs.join('<br>');
+                }
+            } catch (error) {
+                console.error('Error starting bot:', error);
+                errorMessage.innerText = 'Failed to start bot: ' + error.message;
+                logs.push('Failed to start bot: ' + error.message);
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+            }
+        }
+
+        async function stopBot() {
+            if (!botRunning) return;
+            const errorMessage = document.getElementById('error-message');
+            errorMessage.innerText = '';
+
+            try {
+                const url = '/stop_bot';
+                console.log('Sending request to:', url);
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Stop Bot response:', result);
+                if (result.status === 'success') {
+                    botRunning = false;
+                    document.getElementById('start-btn').disabled = false;
+                    document.getElementById('stop-btn').disabled = true;
+                    logs.push('Bot stopped successfully');
+                    document.getElementById('log-container').innerHTML = logs.join('<br>');
+                } else {
+                    errorMessage.innerText = result.message;
+                    logs.push(`Error: ${result.message}`);
+                    document.getElementById('log-container').innerHTML = logs.join('<br>');
+                }
+            } catch (error) {
+                console.error('Error stopping bot:', error);
+                errorMessage.innerText = 'Failed to stop bot: ' + error.message;
+                logs.push('Failed to stop bot: ' + error.message);
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+            }
+        }
+
+        async function setRokada() {
+            const errorMessage = document.getElementById('error-message');
+            errorMessage.innerText = '';
+
+            try {
+                const currentStatus = document.getElementById('rokada-status').innerText;
+                const url = '/set_rokada';
+                console.log('Sending request to:', url, { status: currentStatus === 'off' ? 'on' : 'off' });
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: currentStatus === 'off' ? 'on' : 'off' })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Toggle Rokada response:', result);
+                if (result.status !== 'success') {
+                    errorMessage.innerText = result.message;
+                    logs.push(`Error: ${result.message}`);
+                } else {
+                    logs.push(`Rokada toggled to ${currentStatus === 'off' ? 'on' : 'off'}`);
+                }
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+            } catch (error) {
+                console.error('Error toggling rokada:', error);
+                errorMessage.innerText = 'Failed to toggle rokada: ' + error.message;
+                logs.push('Failed to toggle rokada: ' + error.message);
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+            }
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
