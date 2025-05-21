@@ -37,6 +37,8 @@ load_dotenv()
 
 # Globalne promenljive
 ws_clients: List[WebSocket] = []  # Lista aktivnih WebSocket klijenata
+last_bids = []
+last_asks = []
 active_trades = []
 rokada_status_global = "off"
 cached_data = None
@@ -122,25 +124,50 @@ async def websocket_endpoint(websocket: WebSocket):
             current_time = time.time()
             if current_time - last_send_time < 0.2:  # Interval od 200ms
                 continue
-
             if 'bids' in msg and 'asks' in msg:
-                bids = msg['bids']
-                asks = msg['asks']
+                new_bids = msg['bids']
+                new_asks = msg['asks']
             elif 'b' in msg and 'a' in msg:
-                bids = msg['b']
-                asks = msg['a']
+                new_bids = msg['b']
+                new_asks = msg['a']
             else:
                 logger.warning(f"Nepoznat format WebSocket poruke: {msg}")
                 continue
 
-            if not bids or not asks:
-                logger.warning(f"Prazni bids ili asks u WebSocket poruci: {msg}")
+            # Keširanje poslednjih validnih bids/asks
+            global last_bids, last_asks
+            if new_bids:
+                last_bids = new_bids
+            if new_asks:
+                last_asks = new_asks
+
+            if not last_bids or not last_asks:
+                logger.warning("Nema validnih bids ili asks podataka")
                 continue
 
             orderbook = {
-                'bids': [[float(bid[0]), float(bid[1])] for bid in bids],
-                'asks': [[float(ask[0]), float(ask[1])] for ask in asks]
+                'bids': [[float(bid[0]), float(bid[1])] for bid in last_bids],
+                'asks': [[float(ask[0]), float(ask[1])] for ask in last_asks]
             }
+
+            # if 'bids' in msg and 'asks' in msg:
+            #     bids = msg['bids']
+            #     asks = msg['asks']
+            # elif 'b' in msg and 'a' in msg:
+            #     bids = msg['b']
+            #     asks = msg['a']
+            # else:
+            #     logger.warning(f"Nepoznat format WebSocket poruke: {msg}")
+            #     continue
+            #
+            # if not bids or not asks:
+            #     logger.warning(f"Prazni bids ili asks u WebSocket poruci: {msg}")
+            #     continue
+            #
+            # orderbook = {
+            #     'bids': [[float(bid[0]), float(bid[1])] for bid in bids],
+            #     'asks': [[float(ask[0]), float(ask[1])] for ask in asks]
+            # }
 
             if not orderbook['bids'] or not orderbook['asks']:
                 logger.warning(f"Prazan orderbook nakon konverzije: {orderbook}")
