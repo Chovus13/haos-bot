@@ -175,7 +175,7 @@
                 const url = '/start_bot';
                 console.log('Sending request to:', url, { leverage, amount });
                 const response = await fetch(url, {
-                    method: 'POST',
+                    method: 'GET',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ leverage: parseInt(leverage), amount: parseFloat(amount) })
                 });
@@ -212,7 +212,7 @@
                 const url = '/stop_bot';
                 console.log('Sending request to:', url);
                 const response = await fetch(url, {
-                    method: 'POST',
+                    method: 'GET',
                     headers: { 'Content-Type': 'application/json' }
                 });
                 if (!response.ok) {
@@ -248,7 +248,7 @@
                 const url = '/set_rokada';
                 console.log('Sending request to:', url, { status: currentStatus === 'off' ? 'on' : 'off' });
                 const response = await fetch(url, {
-                    method: 'POST',
+                    method: 'GET',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ status: currentStatus === 'off' ? 'on' : 'off' })
                 });
