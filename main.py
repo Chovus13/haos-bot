@@ -112,6 +112,7 @@ async def connect_binance_ws():
             logger.error(f"Greška u Binance WebSocket konekciji: {str(e)}")
             await asyncio.sleep(5)
 
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -154,12 +155,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
             walls = filter_walls(orderbook, current_price)
             trend = detect_trend(orderbook, current_price)
-            signals = generate_signals(current_price, walls, trend, rokada_status=rokada_status_global)
+
+            # Automatski uključivanje Rokade ako postoje zidovi
+            if walls['support'] or walls['resistance']:
+                set_rokada_status("on")
+
+            signals = generate_signals(current_price, walls, trend, rokada_status_global)
 
             updated_trades = []
             for trade in active_trades:
                 trade['current_price'] = current_price
-                trade['status'] = 'winning' if (trade['type'] == 'LONG' and current_price > trade['entry_price']) else 'losing'
+                trade['status'] = 'winning' if (
+                            trade['type'] == 'LONG' and current_price > trade['entry_price']) else 'losing'
                 updated_trades.append(trade)
 
             response = {
@@ -173,7 +180,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 'signals': signals,
                 'rokada_status': rokada_status_global,
                 'active_trades': updated_trades,
-                'ws_latency': round((time.time() - current_time) * 1000, 2),  # WebSocket latencija
+                'ws_latency': round((time.time() - current_time) * 1000, 2),
                 'debug': {
                     'bids': orderbook['bids'][:3],
                     'asks': orderbook['asks'][:3],
@@ -181,10 +188,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     'signals': signals
                 }
             }
-            # Merenje REST latencije
             rest_start_time = time.time()
             try:
-                await exchange.fetch_order_book('ETH/BTC', limit=50)
+                await exchange.fetch_order_book('ETH/BTC', limit=20)  # Smanjen limit
                 rest_latency = round((time.time() - rest_start_time) * 1000, 2)
             except Exception as e:
                 logger.error(f"Greška pri merenju REST latencije: {str(e)}")
@@ -200,8 +206,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
             last_send_time = current_time
 
-
-
     except Exception as e:
         logger.error("WebSocket greška: %s", str(e))
     finally:
@@ -214,15 +218,21 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.post('/start_bot')
 async def startBot(data: dict):
     global bot_running, leverage, trade_amount
-    leverage = data.get('leverage', 3)
-    trade_amount = data.get('amount', 0.06)
-    if trade_amount < 0.05:  # Smanjujemo minimum na 0.05 ETH
+    logger.info(f"Primljen POST /start_bot: {data}")
+    leverage = data.get('leverage', LEVERAGE)  # Uzima iz config.py ako nije poslato
+    trade_amount = data.get('amount', AMOUNT)
+    if trade_amount < 0.05:
+        logger.error("Amount is too low")
         return {'status': 'error', 'message': 'Amount must be at least 0.05 ETH'}
+    if leverage not in [1, 3, 5, 10]:  # Ograničiti leverage na validne vrednosti
+        logger.error(f"Invalid leverage: {leverage}")
+        return {'status': 'error', 'message': 'Leverage must be 1, 3, 5, or 10'}
     if bot_running:
+        logger.warning("Bot is already running")
         return {'status': 'error', 'message': 'Bot is already running'}
     bot_running = True
     logger.info(f"Bot started with leverage={leverage}, amount={trade_amount}")
-    return {'status': 'success'}
+    return {'status': 'success', 'leverage': leverage, 'amount': trade_amount}
 
 
 def get_rokada_status():
@@ -248,15 +258,17 @@ async def set_rokada(status: str):
         return {'status': get_rokada_status(), 'signals': signals}
     return {'error': 'Status mora biti "on" ili "off"'}
 
+
+
 @app.get('/get_data')
 async def get_data():
     global cached_data
-    if cached_data and (time.time() - cached_data['timestamp'] < 15):  # Povećavamo keširanje na 15 sekundi
+    if cached_data and (time.time() - cached_data['timestamp'] < 5):  # Smanjeno keširanje
         logger.info("Vraćam keširane podatke")
         return cached_data['data']
 
     try:
-        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=50)  # Smanjujemo limit na 50
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)  # Smanjen limit
         current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
         walls = filter_walls(orderbook, current_price)
         trend = detect_trend(orderbook, current_price)
@@ -271,7 +283,7 @@ async def get_data():
             "price": current_price,
             "support": len(walls.get("support", [])),
             "resistance": len(walls.get("resistance", [])),
-            "support_walls": walls.get("support", []),
+            "support_walls": walls.get("supportPhillips@, []"),
             "resistance_walls": walls.get("resistance", []),
             "trend": trend,
             "signals": signals,
@@ -282,17 +294,11 @@ async def get_data():
             "active_trades": active_trades
         }
         cached_data = {'data': data, 'timestamp': time.time()}
+        logger.info(f"Vraćam sveže podatke: {data}")
         return data
     except Exception as e:
         logger.error(f"Error fetching data: {e}")
         return {"error": "Failed to fetch data"}
-
-async def fetch_current_data():
-    orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)
-    current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
-    walls = filter_walls(orderbook, current_price)
-    trend = detect_trend(orderbook, current_price)
-    return current_price, walls, trend
 
 @app.get('/start_trade/{signal_index}')
 async def start_trade(signal_index: int):
