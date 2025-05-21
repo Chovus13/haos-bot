@@ -164,6 +164,40 @@
             };
         }
 
+        async function setRokada() {
+            const errorMessage = document.getElementById('error-message');
+            errorMessage.innerText = '';
+
+            try {
+                const currentStatus = document.getElementById('rokada-status').innerText;
+                const newStatus = currentStatus === 'off' ? 'on' : 'off';
+                const url = '/set_rokada';
+                console.log('Sending POST to:', url, { status: newStatus });
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Toggle Rokada response:', result);
+                if (result.status === 'error') {
+                    errorMessage.innerText = result.error;
+                    logs.push(`Error: ${result.error}`);
+                } else {
+                    logs.push(`Rokada toggled to ${newStatus}`);
+                    document.getElementById('rokada-status').innerText = newStatus;
+                }
+            } catch (error) {
+                console.error('Error toggling rokada:', error);
+                errorMessage.innerText = 'Failed to toggle rokada: ' + error.message;
+                logs.push('Failed to toggle rokada: ' + error.message);
+            }
+            document.getElementById('log-container').innerHTML = logs.join('<br>');
+        }
+
         async function startBot() {
             if (botRunning) return;
             const leverage = document.getElementById('leverage').value;
@@ -171,13 +205,21 @@
             const errorMessage = document.getElementById('error-message');
             errorMessage.innerText = '';
 
+            if (!leverage || !amount || leverage < 1 || amount < 0.05) {
+                errorMessage.innerText = 'Leverage must be >= 1 and amount >= 0.05 ETH';
+                logs.push('Error: Invalid leverage or amount');
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+                return;
+            }
+
             try {
                 const url = '/start_bot';
-                console.log('Sending request to:', url, { leverage, amount });
+                const body = { leverage: parseInt(leverage), amount: parseFloat(amount), symbol: 'ETH/BTC' };
+                console.log('Sending POST to:', url, body);
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ leverage: parseInt(leverage), amount: parseFloat(amount) })
+                    body: JSON.stringify(body)
                 });
                 if (!response.ok) {
                     throw new Error(`HTTP error! Status: ${response.status}`);
@@ -189,18 +231,16 @@
                     document.getElementById('start-btn').disabled = true;
                     document.getElementById('stop-btn').disabled = false;
                     logs.push('Bot started successfully');
-                    document.getElementById('log-container').innerHTML = logs.join('<br>');
                 } else {
                     errorMessage.innerText = result.message;
                     logs.push(`Error: ${result.message}`);
-                    document.getElementById('log-container').innerHTML = logs.join('<br>');
                 }
             } catch (error) {
                 console.error('Error starting bot:', error);
                 errorMessage.innerText = 'Failed to start bot: ' + error.message;
                 logs.push('Failed to start bot: ' + error.message);
-                document.getElementById('log-container').innerHTML = logs.join('<br>');
             }
+            document.getElementById('log-container').innerHTML = logs.join('<br>');
         }
 
         async function stopBot() {
@@ -210,10 +250,11 @@
 
             try {
                 const url = '/stop_bot';
-                console.log('Sending request to:', url);
+                console.log('Sending POST to:', url);
                 const response = await fetch(url, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
                 });
                 if (!response.ok) {
                     throw new Error(`HTTP error! Status: ${response.status}`);
@@ -225,53 +266,17 @@
                     document.getElementById('start-btn').disabled = false;
                     document.getElementById('stop-btn').disabled = true;
                     logs.push('Bot stopped successfully');
-                    document.getElementById('log-container').innerHTML = logs.join('<br>');
                 } else {
                     errorMessage.innerText = result.message;
                     logs.push(`Error: ${result.message}`);
-                    document.getElementById('log-container').innerHTML = logs.join('<br>');
                 }
             } catch (error) {
                 console.error('Error stopping bot:', error);
                 errorMessage.innerText = 'Failed to stop bot: ' + error.message;
                 logs.push('Failed to stop bot: ' + error.message);
-                document.getElementById('log-container').innerHTML = logs.join('<br>');
             }
+            document.getElementById('log-container').innerHTML = logs.join('<br>');
         }
-
-        async function setRokada() {
-            const errorMessage = document.getElementById('error-message');
-            errorMessage.innerText = '';
-
-            try {
-                const currentStatus = document.getElementById('rokada-status').innerText;
-                const url = '/set_rokada';
-                console.log('Sending request to:', url, { status: currentStatus === 'off' ? 'on' : 'off' });
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: currentStatus === 'off' ? 'on' : 'off' })
-                });
-                if (!response.ok) {
-                    throw new Error(`HTTP error! Status: ${response.status}`);
-                }
-                const result = await response.json();
-                console.log('Toggle Rokada response:', result);
-                if (result.status !== 'success') {
-                    errorMessage.innerText = result.message;
-                    logs.push(`Error: ${result.message}`);
-                } else {
-                    logs.push(`Rokada toggled to ${currentStatus === 'off' ? 'on' : 'off'}`);
-                }
-                document.getElementById('log-container').innerHTML = logs.join('<br>');
-            } catch (error) {
-                console.error('Error toggling rokada:', error);
-                errorMessage.innerText = 'Failed to toggle rokada: ' + error.message;
-                logs.push('Failed to toggle rokada: ' + error.message);
-                document.getElementById('log-container').innerHTML = logs.join('<br>');
-            }
-        }
-
         connectWebSocket();
     </script>
 </body>

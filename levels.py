@@ -1,7 +1,8 @@
 import logging
-from config import TARGET_DIGITS, SPECIAL_DIGITS, PROFIT_TARGET
+from config import TARGET_DIGITS, SPECIAL_DIGITS, PROFIT_TARGET, set_rokada_status, get_rokada_status
 
 logger = logging.getLogger(__name__)
+
 
 def is_rounded_zero(price):
     price_str = f"{price:.5f}"
@@ -23,8 +24,8 @@ def generate_signals(current_price, walls, trend, rokada_status="off"):
 
     # Automatski uključivanje rokada_status ako postoje jaki zidovi
     if len(support_walls) > 0 or len(resistance_walls) > 0:
-        set_rokada_status("on")  # Funkcija iz main.py
-        rokada_status = "on"
+        set_rokada_status("on")
+        rokada_status = get_rokada_status()
         logger.info("Rokada status automatski uključen zbog prisutnih zidova")
 
     for price, volume in support_walls:
@@ -40,7 +41,7 @@ def generate_signals(current_price, walls, trend, rokada_status="off"):
                     'stop_loss': round(price - 0.00005, 5),
                     'take_profit': round(price + PROFIT_TARGET, 5),
                     'volume': volume,
-                    'confidence': min(0.9, volume / 100)  # Dodato za samopouzdanje
+                    'confidence': min(0.9, volume / 100)
                 }
                 signals.append(signal)
                 logger.info(f"Signal: {signal}")
