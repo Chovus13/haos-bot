@@ -3,7 +3,7 @@ import numpy as np
 from config import WALL_RANGE_SPREAD, MIN_WALL_VOLUME, PRICE_PRECISION
 
 logger = logging.getLogger(__name__)
-def filter_walls(orderbook, current_price, threshold=0.002):  # Smanjen threshold
+def filter_walls(orderbook, current_price, threshold=0.002):
     logger.info(f"Ulaz u filter_walls: current_price={current_price}, threshold={threshold}")
     if not orderbook or 'bids' not in orderbook or 'asks' not in orderbook:
         logger.error(f"Orderbook nije ispravan: {orderbook}")
@@ -18,26 +18,26 @@ def filter_walls(orderbook, current_price, threshold=0.002):  # Smanjen threshol
     logger.info(f"Bids: {len(bids)}, Asks: {len(asks)}, Total bid volume: {total_bid_volume:.2f}, Total ask volume: {total_ask_volume:.2f}")
 
     support_walls = []
-    for i in range(len(bids) - 10):
-        cluster_volumes = bid_volumes[i:i+10]
-        cluster_prices = bids[i:i+10, 0]
+    for i in range(len(bids) - 5):  # Smanjeno na 5
+        cluster_volumes = bid_volumes[i:i+5]
+        cluster_prices = bids[i:i+5, 0]
         cluster_volume = sum(cluster_volumes)
         price_spread = max(cluster_prices) - min(cluster_prices)
-        logger.debug(f"Support cluster {i}: volume={cluster_volume:.2f}, price_spread={price_spread:.5f}, threshold_check={threshold * total_bid_volume:.2f}")
-        if price_spread <= WALL_RANGE_SPREAD and cluster_volume >= 20:  # Smanjen MIN_WALL_VOLUME
+        logger.debug(f"Support cluster {i}: volume={cluster_volume:.2f}, price_spread={price_spread:.5f}")
+        if price_spread <= WALL_RANGE_SPREAD and cluster_volume >= MIN_WALL_VOLUME:
             avg_price = np.mean(cluster_prices)
             avg_price = round(float(avg_price), PRICE_PRECISION)
             support_walls.append([avg_price, cluster_volume])
             logger.info(f"Support wall: price={avg_price:.5f}, volume={cluster_volume:.2f}")
 
     resistance_walls = []
-    for i in range(len(asks) - 10):
-        cluster_volumes = ask_volumes[i:i+10]
-        cluster_prices = asks[i:i+10, 0]
+    for i in range(len(asks) - 5):  # Smanjeno na 5
+        cluster_volumes = ask_volumes[i:i+5]
+        cluster_prices = asks[i:i+5, 0]
         cluster_volume = sum(cluster_volumes)
         price_spread = max(cluster_prices) - min(cluster_prices)
-        logger.debug(f"Resistance cluster {i}: volume={cluster_volume:.2f}, price_spread={price_spread:.5f}, threshold_check={threshold * total_ask_volume:.2f}")
-        if price_spread <= WALL_RANGE_SPREAD and cluster_volume >= 20:  # Smanjen MIN_WALL_VOLUME
+        logger.debug(f"Resistance cluster {i}: volume={cluster_volume:.2f}, price_spread={price_spread:.5f}")
+        if price_spread <= WALL_RANGE_SPREAD and cluster_volume >= MIN_WALL_VOLUME:
             avg_price = np.mean(cluster_prices)
             avg_price = round(float(avg_price), PRICE_PRECISION)
             resistance_walls.append([avg_price, cluster_volume])

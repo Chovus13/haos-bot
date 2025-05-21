@@ -244,7 +244,11 @@
         }
 
         async function stopBot() {
-            if (!botRunning) return;
+            if (!botRunning) {
+                logs.push('Bot is not running');
+                document.getElementById('log-container').innerHTML = logs.join('<br>');
+                return;
+            }
             const errorMessage = document.getElementById('error-message');
             errorMessage.innerText = '';
 
@@ -277,6 +281,7 @@
             }
             document.getElementById('log-container').innerHTML = logs.join('<br>');
         }
+
         connectWebSocket();
     </script>
 </body>

@@ -19,34 +19,25 @@ app = FastAPI()
 
 load_dotenv()
 
-
-# async def main():
-#     bot = telegram.Bot("TOKEN")
-#     async with bot:
-#         print(await bot.get_me())
-#
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8000", "http://192.168.68.100:8000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-
 # Globalne promenljive
-ws_clients: List[WebSocket] = []  # Lista aktivnih WebSocket klijenata
+ws_clients: List[WebSocket] = []
 last_bids = []
 last_asks = []
 active_trades = []
-cached_data = None
 bot_running = False
 leverage = 1
-trade_amount = 0.06
+trade_amount = 0.051
 
 # Podešavanje logger-a
-os.makedirs('logs', exist_ok=True)  # Kreiramo direktorijum /logs ako ne postoji
+os.makedirs('logs', exist_ok=True)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -89,7 +80,7 @@ exchange = ccxt.binance({
     'secret': os.getenv('API_SECRET'),
     'enableRateLimit': True,
 })
-
+logger.info(f"API ključevi: key={os.getenv('API_KEY')[:4]}..., secret={os.getenv('API_SECRET')[:4]}...")
 
 async def fetch_current_data():
     orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)  # Smanjen limit
@@ -167,7 +158,11 @@ async def websocket_endpoint(websocket: WebSocket):
             walls = filter_walls(orderbook, current_price)
             trend = detect_trend(orderbook, current_price)
 
-            signals = generate_signals(current_price, walls, trend)
+            # Automatski uključivanje Rokade ako postoje zidovi
+            if walls['support'] or walls['resistance']:
+                set_rokada_status("on")
+
+            signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
 
             updated_trades = []
             for trade in active_trades:
@@ -185,7 +180,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 'resistance_walls': walls['resistance'],
                 'trend': trend,
                 'signals': signals,
-                'rokada_status': get_rokada_status,
+                'rokada_status': get_rokada_status(),  # Ispravljeno
                 'active_trades': updated_trades,
                 'ws_latency': round((time.time() - current_time) * 1000, 2),
                 'debug': {
@@ -197,7 +192,7 @@ async def websocket_endpoint(websocket: WebSocket):
             }
             rest_start_time = time.time()
             try:
-                await exchange.fetch_order_book('ETH/BTC', limit=20)  # Smanjen limit
+                await exchange.fetch_order_book('ETH/BTC', limit=50)  # Povećano na 50
                 rest_latency = round((time.time() - rest_start_time) * 1000, 2)
             except Exception as e:
                 logger.error(f"Greška pri merenju REST latencije: {str(e)}")
@@ -222,25 +217,6 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info("Klijentski WebSocket zatvoren")
 
 
-@app.post('/start_bot')
-async def startBot(data: dict):
-    global bot_running, leverage, trade_amount
-    logger.info(f"Primljen POST /start_bot: {data}")
-    leverage = data.get('leverage', LEVERAGE)  # Uzima iz config.py ako nije poslato
-    trade_amount = data.get('amount', AMOUNT)
-    if trade_amount < 0.05:
-        logger.error("Amount is too low")
-        return {'status': 'error', 'message': 'Amount must be at least 0.05 ETH'}
-    if leverage not in [1, 3, 5, 10]:  # Ograničiti leverage na validne vrednosti
-        logger.error(f"Invalid leverage: {leverage}")
-        return {'status': 'error', 'message': 'Leverage must be 1, 3, 5, or 10'}
-    if bot_running:
-        logger.warning("Bot is already running")
-        return {'status': 'error', 'message': 'Bot is already running'}
-    bot_running = True
-    logger.info(f"Bot started with leverage={leverage}, amount={trade_amount}")
-    return {'status': 'success', 'leverage': leverage, 'amount': trade_amount}
-
 
 
 
@@ -250,7 +226,7 @@ async def set_rokada(data: dict):
     logger.info(f"Received request to set rokada status to: {status}")
     success = set_rokada_status(status)
     if success:
-        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)
         current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
         walls = filter_walls(orderbook, current_price)
         trend = detect_trend(orderbook, current_price)
@@ -278,18 +254,21 @@ async def get_data():
         return cached_data['data']
 
     try:
-        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)
         current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
         walls = filter_walls(orderbook, current_price)
         trend = detect_trend(orderbook, current_price)
-        signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
+        signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())  # Dodato ()
         exchange.options['defaultType'] = 'future'
-        logger.info("Pokusavam ocitati balans...")
-        balance = await exchange.fetch_balance()
-        logger.info(f"Balans: {balance}")
-        eth_balance = balance.get('ETH', {}).get('free', 0)
-        btc_balance = balance.get('BTC', {}).get('free', 0)
-        usdt_balance = balance.get('USDT', {}).get('free', 0)
+        try:
+            balance = await exchange.fetch_balance()
+            logger.info(f"Balans: {balance}")
+            eth_balance = balance.get('ETH', {}).get('free', 0)
+            btc_balance = balance.get('BTC', {}).get('free', 0)
+            usdt_balance = balance.get('USDT', {}).get('free', 0)
+        except Exception as e:
+            logger.error(f"Greška pri očitavanju balansa: {e}")
+            eth_balance = btc_balance = usdt_balance = 0
 
         data = {
             "price": current_price,
@@ -302,7 +281,7 @@ async def get_data():
             "balance": eth_balance,
             "balance_currency": "ETH",
             "extra_balances": {"BTC": btc_balance, "USDT": usdt_balance},
-            "rokada_status": get_rokada_status(),
+            "rokada_status": get_rokada_status(),  # Dodato ()
             "active_trades": active_trades
         }
         cached_data = {'data': data, 'timestamp': time.time()}
@@ -366,26 +345,35 @@ async def start_trade(signal_index: int):
         return {'error': str(e)}
 
 
+@app.post('/start_bot')
+async def startBot(data: dict):
+    global bot_running, leverage, trade_amount
+    logger.info(f"Primljen POST /start_bot: {data}")
+    leverage = data.get('leverage', LEVERAGE)
+    trade_amount = data.get('amount', AMOUNT)
+    if trade_amount < 0.05:
+        logger.error("Amount is too low")
+        return {'status': 'error', 'message': 'Amount must be at least 0.05 ETH'}
+    if leverage not in [1, 3, 5, 10]:
+        logger.error(f"Invalid leverage: {leverage}")
+        return {'status': 'error', 'message': 'Leverage must be 1, 3, 5, or 10'}
+    if bot_running:
+        logger.warning("Bot is already running")
+        return {'status': 'error', 'message': 'Bot is already running'}
+    bot_running = True
+    logger.info(f"Bot started with leverage={leverage}, amount={trade_amount}")
+    return {'status': 'success', 'leverage': leverage, 'amount': trade_amount}
 
 @app.post('/stop_bot')
 async def stopBot():
     global bot_running
+    logger.info("Primljen POST /stop_bot")
     if not bot_running:
         logger.warning("Bot is not running")
         return {'status': 'error', 'message': 'Bot is not running'}
     bot_running = False
     logger.info("Bot stopped")
     return {'status': 'success'}
-
-# @app.post('/stop_bot')
-# async def stopBot():
-#     global bot_running
-#     if not bot_running:
-#         return {'status': 'error', 'message': 'Bot is not running'}
-#     bot_running = False
-#     logger.info("Bot stopped")
-#     return {'status': 'success'}
-
 
 
 
