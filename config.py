@@ -7,8 +7,8 @@ load_dotenv()
 PAR = os.getenv('ETHBTC', 'ETH/BTC')
 
 # Postavke za zidove
-WALL_RANGE_SPREAD = float(os.getenv('WALL_RANGE_SPREAD', 0.00002))
-MIN_WALL_VOLUME = float(os.getenv('MIN_WALL_VOLUME', 20))  # Smanjeno na 20
+MIN_WALL_VOLUME = float(os.getenv('MIN_WALL_VOLUME', 5))  # Smanjeno na 5
+WALL_RANGE_SPREAD = float(os.getenv('WALL_RANGE_SPREAD', 0.00005))
 
 # Preciznost
 PRICE_PRECISION = int(os.getenv('PRICE_PRECISION', 5))
