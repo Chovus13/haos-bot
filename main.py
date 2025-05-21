@@ -1,5 +1,3 @@
-### PATCHOVANI main.py sa keširanjem, dodatnim logovanjem i debug prikazom
-
 import logging
 import logging.handlers
 import os
@@ -18,28 +16,64 @@ import time
 import telegram
 
 app = FastAPI()
+
 load_dotenv()
 
-ws_clients: List[WebSocket] = []
+
+# async def main():
+#     bot = telegram.Bot("TOKEN")
+#     async with bot:
+#         print(await bot.get_me())
+#
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8888", "http://192.168.68.100:8888"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+# Globalne promenljive
+ws_clients: List[WebSocket] = []  # Lista aktivnih WebSocket klijenata
+last_bids = []
+last_asks = []
 active_trades = []
 rokada_status_global = "off"
 cached_data = None
 bot_running = False
-leverage = 2
+leverage = 1
 trade_amount = 0.06
-last_bids = []
-last_asks = []
 
-os.makedirs('logs', exist_ok=True)
+# Podešavanje logger-a
+os.makedirs('logs', exist_ok=True)  # Kreiramo direktorijum /logs ako ne postoji
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+# File handler za logs/bot.log
 file_handler = logging.FileHandler('logs/bot.log')
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
+
+# Stream handler za konzolu
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(stream_handler)
 
+# Funkcija za slanje logova klijentima
+async def send_logs_to_clients(message, level):
+    if not ws_clients:  # Provera da li je lista prazna
+        return
+    log_message = {'type': 'log', 'message': f"{level}: {message}"}
+    for client in ws_clients[:]:  # Kopija liste da izbegnemo greške pri iteraciji
+        try:
+            await client.send_text(json.dumps(log_message))
+        except Exception as e:
+            logger.error(f"Greška pri slanju logova klijentu: {str(e)}")
+            ws_clients.remove(client)  # Uklanjamo klijenta ako je diskonektovan
+
+# WebSocket logging handler
 class WebSocketLoggingHandler(logging.Handler):
     def emit(self, record):
         log_entry = self.format(record)
@@ -50,23 +84,14 @@ ws_handler = WebSocketLoggingHandler()
 ws_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 logger.addHandler(ws_handler)
 
+# Inicijalizacija CCXT exchange-a
 exchange = ccxt.binance({
     'apiKey': os.getenv('API_KEY'),
     'secret': os.getenv('API_SECRET'),
     'enableRateLimit': True,
 })
 
-async def send_logs_to_clients(message, level):
-    if not ws_clients:
-        return
-    log_message = {'type': 'log', 'message': f"{level}: {message}"}
-    for client in ws_clients[:]:
-        try:
-            await client.send_text(json.dumps(log_message))
-        except Exception as e:
-            logger.error(f"Greška pri slanju logova klijentu: {str(e)}")
-            ws_clients.remove(client)
-
+# WebSocket konekcija sa Binance-om
 async def connect_binance_ws():
     while True:
         try:
@@ -77,10 +102,11 @@ async def connect_binance_ws():
                         try:
                             msg = await asyncio.wait_for(ws.receive_json(), timeout=60.0)
                             if ws.closed:
-                                logger.warning("Binance WebSocket zatvoren")
+                                logger.warning("Binance WebSocket zatvoren, pokušavam ponovno povezivanje")
                                 break
                             yield msg
                         except asyncio.TimeoutError:
+                            logger.info("Šaljem ping poruku Binance WebSocket-u")
                             await ws.ping()
         except Exception as e:
             logger.error(f"Greška u Binance WebSocket konekciji: {str(e)}")
@@ -109,7 +135,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 last_asks = new_asks
 
             if not last_bids or not last_asks:
-                logger.warning("Nema validnih bids ili asks podataka")
+                logger.debug("Čekam na prvi validan orderbook...")
                 continue
 
             orderbook = {
@@ -123,7 +149,7 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
             except (IndexError, ValueError) as e:
-                logger.error(f"Greska pri izracunavanju cene: {str(e)}")
+                logger.error("Greška pri izračunavanju cene: %s", str(e))
                 continue
 
             walls = filter_walls(orderbook, current_price)
@@ -147,6 +173,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 'signals': signals,
                 'rokada_status': rokada_status_global,
                 'active_trades': updated_trades,
+                'ws_latency': round((time.time() - current_time) * 1000, 2),  # WebSocket latencija
                 'debug': {
                     'bids': orderbook['bids'][:3],
                     'asks': orderbook['asks'][:3],
@@ -154,21 +181,35 @@ async def websocket_endpoint(websocket: WebSocket):
                     'signals': signals
                 }
             }
+            # Merenje REST latencije
+            rest_start_time = time.time()
             try:
+                await exchange.fetch_order_book('ETH/BTC', limit=50)
+                rest_latency = round((time.time() - rest_start_time) * 1000, 2)
+            except Exception as e:
+                logger.error(f"Greška pri merenju REST latencije: {str(e)}")
+                rest_latency = 'N/A'
+            response['rest_latency'] = rest_latency
+
+            try:
+                logger.info(f"Šaljem podatke preko WebSocket-a: {response}")
                 await websocket.send_text(json.dumps(response))
             except RuntimeError as e:
-                logger.error("Pokušaj slanja poruke zatvorenom WS: ")
-                break  # Izađi iz petlje
-                last_send_time = current_time    ### SETI#SE - ovo ne znam da li treba
+                logger.warning("Pokušaj slanja poruke zatvorenom WS: %s", e)
+                break
+
+            last_send_time = current_time
+
+
+
     except Exception as e:
-        logger.error(f"WebSocket greška: {str(e)}")
+        logger.error("WebSocket greška: %s", str(e))
     finally:
         if websocket in ws_clients:
             ws_clients.remove(websocket)
         await websocket.close()
         logger.info("Klijentski WebSocket zatvoren")
 
-### SETI#SE - ovo sam dodao
 
 @app.post('/start_bot')
 async def startBot(data: dict):
@@ -318,13 +359,6 @@ async def stopBot():
     logger.info("Bot stopped")
     return {'status': 'success'}
 
-
-
-@app.post('/set_rokada')
-async def set_rokada_post(request: Request):
-    data = await request.json()
-    status = data.get('status')
-    return await set_rokada(status)
 
 
 
