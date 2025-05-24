@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Haos Bot</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
             margin: 0;
@@ -75,11 +74,6 @@
         .error {
             color: #ff5555;
         }
-        .chart-container { background-color: dimgray; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); height: 300px;
-        }
-        .signals { background-color: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-height: 200px; overflow-y: auto; }
-        footer { background-color: #333; color: white; padding: 10px; text-align: center; font-size: 14px; }
-        @media (max-width: 768px) { .container { padding: 10px; } .status { grid-template-columns: 1fr; } .chart-container { height: 200px; } }
     </style>
 </head>
 <body>
@@ -115,20 +109,11 @@
         <p>Active Trades: <span id="active-trades">N/A</span></p>
         <p>Signals: <span id="signals">N/A</span></p>
     </div>
-    <div class="chart-container">
-        <canvas id="orderbookChart" width="1576" height="300" style="display: block; box-sizing: border-box; height: 300px; width: 1576px;"></canvas>
-    </div>
-    <footer>
-        <p>Bot Status: <span id="botStatus">Disconnected</span> | Latest Signal: <span id="latestSignal">N/A</span></p>
-    </footer>
+
     <script>
         let ws = null;
-        let chart = null;
-        let lastRestPing = 0;
-        let lastWsPing = 0;
-        let lastWsPong = 0;
-        let wsPingStart = 0;  // Dodajemo za praćenje ping-pong latencije
-
+        let botRunning = false;
+        let logs = [];
 
         function connectWebSocket() {
             const wsUrl = 'ws://' + window.location.host + '/ws';
@@ -138,25 +123,11 @@
                 console.log('WebSocket connected');
                 logs.push('WebSocket connected');
                 document.getElementById('log-container').innerHTML = logs.join('<br>');
-                        // Počni sa slanjem ping poruka svakih 5 sekundi
-                setInterval(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        wsPingStart = Date.now();
-                        ws.send(JSON.stringify({ type: 'ping' }));
-                    }
-                }, 5000);
             };
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                            if (data.type === 'ping') {
-                        // Ignorišemo ping poruke od servera (ako postoje)
-                        } else if (data.type === 'pong') {
-                            lastWsPong = Date.now();
-                            updateLatency();
-                        } else if (data.type === 'data') {
-                            updateUI(data);
-                            updateChart(data);
+                    if (data.type === 'data') {
                         document.getElementById('price').innerText = data.price || 'N/A';
                         document.getElementById('support').innerText = data.support || 'N/A';
                         document.getElementById('resistance').innerText = data.resistance || 'N/A';
@@ -227,50 +198,50 @@
             document.getElementById('log-container').innerHTML = logs.join('<br>');
         }
 
-         async function startBot() {
-            if (botRunning) return;
-            const leverage = document.getElementById('leverage').value;
-            const amount = document.getElementById('amount').value;
-            const errorMessage = document.getElementById('error-message');
-            errorMessage.innerText = '';
+ async function startBot() {
+    if (botRunning) return;
+    const leverage = document.getElementById('leverage').value;
+    const amount = document.getElementById('amount').value;
+    const errorMessage = document.getElementById('error-message');
+    errorMessage.innerText = '';
 
-            if (!leverage || !amount || leverage < 1 || amount < 0.05) {
-                errorMessage.innerText = 'Leverage must be >= 1 and amount >= 0.05 ETH';
-                logs.push('Error: Invalid leverage or amount');
-                document.getElementById('log-container').innerHTML = logs.join('<br>');
-                return;
-            }
+    if (!leverage || !amount || leverage < 1 || amount < 0.05) {
+        errorMessage.innerText = 'Leverage must be >= 1 and amount >= 0.05 ETH';
+        logs.push('Error: Invalid leverage or amount');
+        document.getElementById('log-container').innerHTML = logs.join('<br>');
+        return;
+    }
 
-            try {
-                const url = '/start_bot';
-                const body = { leverage: parseInt(leverage), amount: parseFloat(amount), symbol: 'ETH/BTC' };
-                console.log('Sending POST to:', url, body);
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-                if (!response.ok) {
-                    throw new Error(`HTTP error! Status: ${response.status}`);
-                }
-                const result = await response.json();
-                console.log('Start Bot response:', result);
-                if (result.status === 'success') {
-                    botRunning = true;
-                    document.getElementById('start-btn').disabled = true;
-                    document.getElementById('stop-btn').disabled = false;
-                    logs.push('Bot started successfully');
-                } else {
-                    errorMessage.innerText = result.message;
-                    logs.push(`Error: ${result.message}`);
-                }
-            } catch (error) {
-                console.error('Error starting bot:', error);
-                errorMessage.innerText = 'Failed to start bot: ' + error.message;
-                logs.push('Failed to start bot: ' + error.message);
-            }
-            document.getElementById('log-container').innerHTML = logs.join('<br>');
+    try {
+        const url = '/start_bot';
+        const body = { leverage: parseInt(leverage), amount: parseFloat(amount), symbol: 'ETH/BTC' };
+        console.log('Sending POST to:', url, body);
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
         }
+        const result = await response.json();
+        console.log('Start Bot response:', result);
+        if (result.status === 'success') {
+            botRunning = true;
+            document.getElementById('start-btn').disabled = true;
+            document.getElementById('stop-btn').disabled = false;
+            logs.push('Bot started successfully');
+        } else {
+            errorMessage.innerText = result.message;
+            logs.push(`Error: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('Error starting bot:', error);
+        errorMessage.innerText = 'Failed to start bot: ' + error.message;
+        logs.push('Failed to start bot: ' + error.message);
+    }
+    document.getElementById('log-container').innerHTML = logs.join('<br>');
+}
 
         async function stopBot() {
             if (!botRunning) {
@@ -311,96 +282,7 @@
             document.getElementById('log-container').innerHTML = logs.join('<br>');
         }
 
-                function initChart() {
-            const ctx = document.getElementById('orderbookChart').getContext('2d');
-            chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    datasets: [
-                        { label: 'Support', data: [], borderColor: 'green', fill: false, stepped: true },
-                        { label: 'Resistance', data: [], borderColor: 'red', fill: false, stepped: true }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: { type: 'linear', position: 'bottom', title: { display: true, text: 'Price (ETH/BTC)' } },
-                        y: { title: { display: true, text: 'Volume' } }
-                    }
-                }
-            });
-        }
-
-        function updateUI(data) {
-            document.getElementById('price').textContent = data.price || 'N/A';
-            document.getElementById('support').textContent = data.support || 0;
-            document.getElementById('resistance').textContent = data.resistance || 0;
-            document.getElementById('trend').textContent = data.trend || 'N/A';
-            document.getElementById('balance').textContent = data.balance || 'N/A';
-            document.getElementById('balanceCurrency').textContent = data.balance_currency || 'USDT';  // Dinamička valuta
-            document.getElementById('rokada').textContent = data.rokada_status || 'off';
-
-            const signalsDiv = document.getElementById('signals');
-            if (data.signals && data.signals.length > 0) {
-                signalsDiv.innerHTML = data.signals.map((signal, index) => `
-                    <p>Signal ${index + 1}: ${signal.type} | Entry: ${signal.entry_price} | SL: ${signal.stop_loss} | TP: ${signal.take_profit} | Volume: ${signal.volume}
-                    <button onclick="startTrade(${index})">Start Trade</button></p>
-                `).join('');
-                const strongestSignal = data.signals[0];
-                document.getElementById('latestSignal').textContent = `${strongestSignal.type} | Entry: ${strongestSignal.entry_price} | Volume: ${strongestSignal.volume}`;
-            } else {
-                signalsDiv.innerHTML = '<p>Nema signala</p>';
-                document.getElementById('latestSignal').textContent = 'N/A';
-            }
-        }
-
-        function updateChart(data) {
-            const supportData = data.support_walls ? data.support_walls.map(wall => ({ x: wall[0], y: wall[1] })) : [];
-            const resistanceData = data.resistance_walls ? data.resistance_walls.map(wall => ({ x: wall[0], y: wall[1] })) : [];
-            chart.data.datasets[0].data = supportData;
-            chart.data.datasets[1].data = resistanceData;
-            chart.update();
-        }
-
-     function updateLatency() {
-    const startRest = Date.now();
-    fetch('/get_data')
-        .then(response => {
-            lastRestPing = Date.now() - startRest;
-            return response.json();
-        })
-        .catch(error => {
-            console.error('REST API error:', error);
-            lastRestPing = 'N/A';
-        })
-        .finally(() => {
-            let wsLatency = 'N/A';
-            if (wsPingStart && lastWsPong) {
-                wsLatency = lastWsPong - wsPingStart;
-                if (wsLatency < 0) wsLatency = 'N/A';
-            }
-            document.getElementById('latency').textContent = `Latency: REST: ${lastRestPing} ms | WS: ${wsLatency} ms`;
-        });
-}
-
-
-
-        async function startTrade(signalIndex) {
-            const response = await fetch(`/start_trade/${signalIndex}`);
-            const result = await response.json();
-            if (result.error) {
-                alert(`Greška: ${result.error}`);
-            } else {
-                alert('Trejd započet!');
-            }
-        }
-
-        window.onload = () => {
-            connectWebSocket();
-            initChart();
-            setInterval(updateLatency, 5000);
-        };
+        connectWebSocket();
     </script>
 </body>
 </html>

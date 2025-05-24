@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PsyBot Control Panel</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #1a73e8;
+        }
+        .data-box, .slider-container {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 5px;
+        }
+        .data-label {
+            font-weight: bold;
+            color: #555;
+        }
+        .button {
+            padding: 10px 20px;
+            margin: 5px;
+            background-color: #1a73e8;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .button:hover {
+            background-color: #1557b0;
+        }
+        canvas {
+            margin-top: 20px;
+        }
+        .warning {
+            color: red;
+            display: none;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+        }
+        .active { color: green; font-weight: bold; }
+        .inactive { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PsyBot Control Panel</h1>
+        <div>
+            <button class="button" onclick="startBot()">Start Trading</button>
+            <button class="button" onclick="stopBot()">Stop Trading</button>
+        </div>
+        <div class="data-box">
+            <span class="data-label">Price:</span>
+            <span id="current-price">N/A</span> ETH/BTC
+        </div>
+        <div class="data-box">
+            <span class="data-label">Support:</span>
+            <span id="support">0</span>
+        </div>
+        <div class="data-box">
+            <span class="data-label">Resistance:</span>
+            <span id="resistance">0</span>
+        </div>
+        <div class="data-box">
+            <span class="data-label">Position:</span>
+            <span id="position">None</span>
+        </div>
+        <div class="data-box">
+            <span class="data-label">Balance:</span>
+            <span id="balance">0</span> USDT
+        </div>
+        <div class="data-box">
+            <span class="data-label">Unrealized MMR:</span>
+            <span id="unimmr">0</span>
+        </div>
+        <div class="data-box">
+            <span class="data-label">Manual Mode:</span>
+            <span id="manual" class="inactive">off</span>
+        </div>
+        <div class="data-box">
+            <span class="data-label UX">Rokada Strategy:</span>
+            <span id="rokada" class="inactive">off</span>
+        </div>
+        <div class="data-box">
+            <span class="data-label">RSI (5m):</span>
+            <span id="rsi">N/A</span>
+        </div>
+        <div class="slider-container">
+            <label for="trade-amount">Trade Amount (ETH):</label>
+            <input type="range" id="trade-amount" min="0.01" max="1.0" step="0.01" value="0.01">
+            <span id="trade-amount-value">0.01</span>
+        </div>
+        <div class="slider-container">
+            <label for="leverage">Leverage (x):</label>
+            <input type="range" id="leverage" min="1" max="20" step="1" value="1">
+            <span id="leverage-value">1</span>
+            <p class="warning" id="leverage-warning">Upozorenje: Leverage premašuje sigurnu granicu (10x)!</p>
+        </div>
+        <div id="manual-controls" style="display: none;">
+            <button class="button" onclick="toggleManualMode('on')">Uključi Manuelni Režim</button>
+            <button class="button" onclick="toggleManualMode('off')">Isključi Manuelni Režim</button>
+            <button class="button" onclick="sendManualCommand('disable_tp_sl')">Isključi TP/SL</button>
+            <button class="button" onclick="sendManualCommand('close_position')">Zatvori Poziciju</button>
+            <button class="button" onclick="toggleRokada('on')">Rokada On</button>
+            <button class="button" onclick="toggleRokada('off')">Rokada Off</button>
+            <button class="button" onclick="toggleRSI('on')">RSI On</button>
+            <button class="button" onclick="toggleRSI('off')">RSI Off</button>
+        </div>
+        <canvas id="priceChart" width="400" height="200"></canvas>
+    </div>
+
+    <script>
+        let ws = null;
+        let priceData = [];
+        let timeData = [];
+        const maxDataPoints = 60;
+
+        const ctx = document.getElementById('priceChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: timeData,
+                datasets: [{
+                    label: 'Cena (ETH/BTC)',
+                    data: priceData,
+                    borderColor: '#1a73e8',
+                    fill: false,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    x: { title: { display: true, text: 'Vreme' } },
+                    y: { title: { display: true, text: 'Cena' } }
+                }
+            }
+        });
+
+        const tradeAmountSlider = document.getElementById('trade-amount');
+        const tradeAmountValue = document.getElementById('trade-amount-value');
+        const leverageSlider = document.getElementById('leverage');
+        const leverageValue = document.getElementById('leverage-value');
+        const leverageWarning = document.getElementById('leverage-warning');
+        const manualControls = document.getElementById('manual-controls');
+
+        tradeAmountSlider.addEventListener('input', () => {
+            tradeAmountValue.textContent = tradeAmountSlider.value;
+            updateDataJson({ trade_amount: parseFloat(tradeAmountSlider.value) });
+        });
+
+        leverageSlider.addEventListener('input', () => {
+            leverageValue.textContent = leverageSlider.value;
+            leverageWarning.style.display = parseInt(leverageSlider.value) > 10 ? 'block' : 'none';
+            updateDataJson({ leverage: parseInt(leverageSlider.value) });
+        });
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            ws = new WebSocket(`${protocol}//${host}/ws`);
+
+            ws.onopen = () => {
+                console.log('WebSocket povezan');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Primljeni podaci:', data);
+                document.getElementById('current-price').textContent = data.price ? data.price.toFixed(5) : 'N/A';
+                document.getElementById('support').textContent = data.support ? data.support.toFixed(5) : '0';
+                document.getElementById('resistance').textContent = data.resistance ? data.resistance.toFixed(5) : '0';
+                document.getElementById('position').textContent = data.position || 'None';
+                document.getElementById('balance').textContent = data.balance !== undefined ? data.balance.toFixed(2) + ' USDT' : '0 USDT';
+                document.getElementById('unimmr').textContent = data.unimmr !== undefined ? data.unimmr.toFixed(8) : '0';
+                document.getElementById('manual').textContent = data.manual || 'off';
+                document.getElementById('manual').className = data.manual === 'on' ? 'active' : 'inactive';
+                document.getElementById('rokada').textContent = data.rokada || 'off';
+                document.getElementById('rokada').className = data.rokada === 'on' ? 'active' : 'inactive';
+                document.getElementById('rsi').textContent = data.rsi === 'on' && data.rsi_value ? data.rsi_value : 'N/A';
+                manualControls.style.display = data.manual === 'on' ? 'block' : 'none';
+
+                const now = new Date().toLocaleTimeString();
+                priceData.push(data.price || 0);
+                timeData.push(now);
+                if (priceData.length > maxDataPoints) {
+                    priceData.shift();
+                    timeData.shift();
+                }
+                chart.data.labels = timeData;
+                chart.data.datasets[0].data = priceData;
+                chart.update();
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket zatvoren, reconnect za 3s...');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket greška:', error);
+            };
+        }
+
+        async function startBot() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: 'start' }));
+                alert('Trading započet!');
+            } else {
+                alert('WebSocket nije povezan!');
+            }
+        }
+
+        async function stopBot() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: 'stop' }));
+                alert('Trading zaustavljen!');
+            } else {
+                alert('WebSocket nije povezan!');
+            }
+        }
+
+        async function toggleManualMode(mode) {
+            try {
+                const response = await fetch('/manual', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'toggle', value: mode })
+                });
+                const result = await response.json();
+                console.log('Toggle manual mode:', result);
+                if (mode === 'on') {
+                    sendManualCommand('disable_tp_sl'); // Cancela TP/SL kad se uključi manual mod
+                }
+            } catch (error) {
+                console.error('Greška pri toggle manual mode:', error);
+            }
+        }
+
+        async function sendManualCommand(command) {
+            try {
+                const response = await fetch('/manual', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: command, value: 'on' })
+                });
+                const result = await response.json();
+                console.log(`Manual komanda ${command}:`, result);
+            } catch (error) {
+                console.error(`Greška pri slanju komande ${command}:`, error);
+            }
+        }
+
+        async function toggleRokada(mode) {
+            try {
+                const response = await fetch('/manual', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: `rokada_${mode}` })
+                });
+                const result = await response.json();
+                console.log(`Toggle rokada ${mode}:`, result);
+                await updateDataJson({ rokada: mode });
+            } catch (error) {
+                console.error(`Greška pri toggle rokada ${mode}:`, error);
+            }
+        }
+
+        async function toggleRSI(status) {
+            await updateDataJson({ rsi: status });
+            alert(`RSI postavljen na ${status}`);
+        }
+
+        async function updateDataJson(updates) {
+            try {
+                const response = await fetch('/update_data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updates)
+                });
+                if (!response.ok) throw new Error('Greška pri ažuriranju data.json');
+            } catch (error) {
+                console.error('Greška:', error);
+            }
+        }
+
+        async function updateStatus() {
+            try {
+                const response = await fetch('/get_data');
+                const data = await response.json();
+                console.log('Podaci iz /get_data:', data);
+                document.getElementById('current-price').textContent = data.price ? data.price.toFixed(5) : 'N/A';
+                document.getElementById('position').textContent = data.position || 'None';
+                document.getElementById('balance').textContent = data.balance !== undefined ? data.balance.toFixed(2) + ' USDT' : '0 USDT';
+                document.getElementById('unimmr').textContent = data.unimmr ? data.unimmr.toFixed(8) : '0';
+                document.getElementById('rsi').textContent = data.rsi === 'on' && data.rsi_value ? data.rsi_value : 'N/A';
+                document.getElementById('manual').textContent = data.manual || 'off';
+                document.getElementById('manual').className = data.manual === 'on' ? 'active' : 'inactive';
+                document.getElementById('rokada').textContent = data.rokada || 'off';
+                document.getElementById('rokada').className = data.rokada === 'on' ? 'active' : 'inactive';
+                manualControls.style.display = data.manual === 'on' ? 'block' : 'none';
+            } catch (error) {
+                console.error('Greška pri dohvatanju statusa:', error);
+            }
+        }
+
+        setInterval(updateStatus, 5000);
+        updateStatus();
+        connectWebSocket();
+    </script>
+</body>
+</html>
