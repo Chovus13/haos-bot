@@ -1,40 +1,59 @@
-import logging
-import logging.handlers
-import os
-import asyncio
-import aiohttp
 from fastapi import FastAPI, WebSocket, Request
-import json
-import ccxt.async_support as ccxt
-from typing import List
-from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from config import AMOUNT, LEVERAGE, set_rokada_status, get_rokada_status
 from orderbook import filter_walls, detect_trend
 from levels import generate_signals
+import logging
+import logging.handlers
+import asyncio
+import aiohttp
+import ccxt.async_support as ccxt
+import os
+import json
+from typing import List
+from dotenv import load_dotenv
 import time
 import telegram
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
+
+
 
 load_dotenv()
 
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], ### ["http://your-frontend-domain.com"],  # Be more specific in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 # Globalne promenljive
 ws_clients: List[WebSocket] = []
 last_bids = []
 last_asks = []
-active_trades = []
 bot_running = False
 leverage = 1
-trade_amount = 0.051
+trade_amount = 0.05
+active_trades = []
+rokada_status = "off"
+LEVERAGE = 1
+AMOUNT = 0.05
+cached_data = None
+
+def get_rokada_status():
+    return rokada_status
+
+def set_rokada_status(status):
+    global rokada_status
+    if status in ["on", "off"]:
+        rokada_status = status
+        return True
+    return False
 
 # Podešavanje logger-a
 os.makedirs('logs', exist_ok=True)
@@ -74,6 +93,8 @@ ws_handler = WebSocketLoggingHandler()
 ws_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 logger.addHandler(ws_handler)
 
+
+
 # Inicijalizacija CCXT exchange-a
 exchange = ccxt.binance({
     'apiKey': os.getenv('API_KEY'),
@@ -82,8 +103,22 @@ exchange = ccxt.binance({
 })
 logger.info(f"API ključevi: key={os.getenv('API_KEY')[:4]}..., secret={os.getenv('API_SECRET')[:4]}...")
 
+# Provera balansa ---ja ubacio
+async def balance_check():
+    global bot_running, leverage, trade_amount
+    exchange.options['defaultType'] = 'future'
+    try:
+        balance = await exchange.fetch_balance()
+        eth_balance = balance['ETH']['free'] if 'ETH' in balance else 0
+        if eth_balance < trade_amount:
+            logger.error(f"Nedovoljno balansa za trejd: {eth_balance} ETH, potrebno: {trade_amount} ETH")
+            return
+    except Exception as e:
+        logger.error(f"Greška pri proveri balansa: {str(e)}")
+        return
+
 async def fetch_current_data():
-    orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)  # Smanjen limit
+    orderbook = await exchange.fetch_order_book('ETH/BTC', limit=20)  # Smanjen limit
     current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
     walls = filter_walls(orderbook, current_price)
     trend = detect_trend(orderbook, current_price)
@@ -114,135 +149,147 @@ async def connect_binance_ws():
             logger.error(f"Greška u Binance WebSocket konekciji: {str(e)}")
             await asyncio.sleep(5)
 
+# # WebSocket endpoint
+# @app.websocket("/ws")
+# async def websocket_endpoint(websocket: WebSocket):
+#     await websocket.accept()
+#     ws_clients.append(websocket)
+#     logger.info("Klijentski WebSocket povezan")
+#     last_send_time = 0
+#     global last_bids, last_asks
+#
+#     try:
+#         async for msg in connect_binance_ws():
+#             current_time = time.time()
+#             if current_time - last_send_time < 0.2:
+#                 continue
+#
+#             new_bids = msg.get('bids') or msg.get('b')
+#             new_asks = msg.get('asks') or msg.get('a')
+#
+#             if new_bids:
+#                 last_bids = new_bids
+#             if new_asks:
+#                 last_asks = new_asks
+#
+#             if not last_bids or not last_asks:
+#                 logger.debug("Čekam na prvi validan orderbook...")
+#                 continue
+#
+#             orderbook = {
+#                 'bids': [[float(bid[0]), float(bid[1])] for bid in last_bids],
+#                 'asks': [[float(ask[0]), float(ask[1])] for ask in last_asks]
+#             }
+#
+#             if not orderbook['bids'] or not orderbook['asks']:
+#                 continue
+#
+#             try:
+#                 current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
+#             except (IndexError, ValueError) as e:
+#                 logger.error("Greška pri izračunavanju cene: %s", str(e))
+#                 continue
+#
+#             walls = filter_walls(orderbook, current_price)
+#             trend = detect_trend(orderbook, current_price)
+#
+#             # Automatski uključivanje Rokade ako postoje zidovi
+#             if walls['support'] or walls['resistance']:
+#                 set_rokada_status("on")
+#
+#             signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
+#
+#             updated_trades = []
+#             for trade in active_trades:
+#                 trade['current_price'] = current_price
+#                 trade['status'] = 'winning' if (
+#                             trade['type'] == 'LONG' and current_price > trade['entry_price']) else 'losing'
+#                 updated_trades.append(trade)
+#
+#             response = {
+#                 'type': 'data',
+#                 'price': round(current_price, 5),
+#                 'support': len(walls['support']),
+#                 'resistance': len(walls['resistance']),
+#                 'support_walls': walls['support'],
+#                 'resistance_walls': walls['resistance'],
+#                 'trend': trend,
+#                 'signals': signals,
+#                 'rokada_status': get_rokada_status(),  # Ispravljeno: poziv funkcije
+#                 'active_trades': updated_trades,
+#                 'ws_latency': round((time.time() - current_time) * 1000, 2),
+#                 'debug': {
+#                     'bids': orderbook['bids'][:3],
+#                     'asks': orderbook['asks'][:3],
+#                     'walls': walls,
+#                     'signals': signals
+#                 }
+#             }
+#             rest_start_time = time.time()
+#             try:
+#                 await exchange.fetch_order_book('ETH/BTC', limit=50)  # Povećano na 50
+#                 rest_latency = round((time.time() - rest_start_time) * 1000, 2)
+#             except Exception as e:
+#                 logger.error(f"Greška pri merenju REST latencije: {str(e)}")
+#                 rest_latency = 'N/A'
+#             response['rest_latency'] = rest_latency
+#
+#             try:
+#                 logger.info(f"Šaljem podatke preko WebSocket-a: {response}")
+#                 await websocket.send_text(json.dumps(response))
+#             except RuntimeError as e:
+#                 logger.warning("Pokušaj slanja poruke zatvorenom WS: %s", e)
+#                 break
+#
+#             last_send_time = current_time
+#
+#     except Exception as e:
+#         logger.error("WebSocket greška: %s", str(e))
+#     finally:
+#         if websocket in ws_clients:
+#             ws_clients.remove(websocket)
+#         await websocket.close()
+#         logger.info("Klijentski WebSocket zatvoren")
 
-@app.websocket("/ws")
+
+@app.websocket('/ws')
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    ws_clients.append(websocket)
     logger.info("Klijentski WebSocket povezan")
-    last_send_time = 0
-    global last_bids, last_asks
-
     try:
-        async for msg in connect_binance_ws():
-            current_time = time.time()
-            if current_time - last_send_time < 0.2:
-                continue
-
-            new_bids = msg.get('bids') or msg.get('b')
-            new_asks = msg.get('asks') or msg.get('a')
-
-            if new_bids:
-                last_bids = new_bids
-            if new_asks:
-                last_asks = new_asks
-
-            if not last_bids or not last_asks:
-                logger.debug("Čekam na prvi validan orderbook...")
-                continue
-
-            orderbook = {
-                'bids': [[float(bid[0]), float(bid[1])] for bid in last_bids],
-                'asks': [[float(ask[0]), float(ask[1])] for ask in last_asks]
-            }
-
-            if not orderbook['bids'] or not orderbook['asks']:
-                continue
-
-            try:
-                current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
-            except (IndexError, ValueError) as e:
-                logger.error("Greška pri izračunavanju cene: %s", str(e))
-                continue
-
+        while True:
+            await websocket.receive_text()
+            orderbook = await exchange.fetch_order_book('ETH/BTC', limit=50)
+            current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
             walls = filter_walls(orderbook, current_price)
             trend = detect_trend(orderbook, current_price)
-
-            # Automatski uključivanje Rokade ako postoje zidovi
-            if walls['support'] or walls['resistance']:
-                set_rokada_status("on")
-
             signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
-
-            updated_trades = []
-            for trade in active_trades:
-                trade['current_price'] = current_price
-                trade['status'] = 'winning' if (
-                            trade['type'] == 'LONG' and current_price > trade['entry_price']) else 'losing'
-                updated_trades.append(trade)
-
-            response = {
-                'type': 'data',
-                'price': round(current_price, 5),
-                'support': len(walls['support']),
-                'resistance': len(walls['resistance']),
-                'support_walls': walls['support'],
-                'resistance_walls': walls['resistance'],
-                'trend': trend,
-                'signals': signals,
-                'rokada_status': get_rokada_status(),  # Ispravljeno
-                'active_trades': updated_trades,
-                'ws_latency': round((time.time() - current_time) * 1000, 2),
-                'debug': {
-                    'bids': orderbook['bids'][:3],
-                    'asks': orderbook['asks'][:3],
-                    'walls': walls,
-                    'signals': signals
-                }
+            data = {
+                "type": "data",
+                "price": current_price,
+                "support": len(walls.get("support", [])),
+                "resistance": len(walls.get("resistance", [])),
+                "support_walls": walls.get("support", []),
+                "resistance_walls": walls.get("resistance", []),
+                "trend": trend,
+                "signals": signals,
+                "balance": 0,
+                "balance_currency": "ETH",
+                "extra_balances": {"BTC": 0, "USDT": 0},
+                "rokada_status": get_rokada_status(),
+                "active_trades": active_trades,
+                "ws_latency": 0,
+                "rest_latency": 0
             }
-            rest_start_time = time.time()
-            try:
-                await exchange.fetch_order_book('ETH/BTC', limit=50)  # Povećano na 50
-                rest_latency = round((time.time() - rest_start_time) * 1000, 2)
-            except Exception as e:
-                logger.error(f"Greška pri merenju REST latencije: {str(e)}")
-                rest_latency = 'N/A'
-            response['rest_latency'] = rest_latency
-
-            try:
-                logger.info(f"Šaljem podatke preko WebSocket-a: {response}")
-                await websocket.send_text(json.dumps(response))
-            except RuntimeError as e:
-                logger.warning("Pokušaj slanja poruke zatvorenom WS: %s", e)
-                break
-
-            last_send_time = current_time
-
+            await websocket.send_json(data)
+            await asyncio.sleep(5)
     except Exception as e:
-        logger.error("WebSocket greška: %s", str(e))
+        logger.error(f"WebSocket greška: {str(e)}")
     finally:
-        if websocket in ws_clients:
-            ws_clients.remove(websocket)
         await websocket.close()
         logger.info("Klijentski WebSocket zatvoren")
 
 
-
-
-
-@app.post('/set_rokada')
-async def set_rokada(data: dict):
-    status = data.get('status')
-    logger.info(f"Received request to set rokada status to: {status}")
-    success = set_rokada_status(status)
-    if success:
-        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)
-        current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
-        walls = filter_walls(orderbook, current_price)
-        trend = detect_trend(orderbook, current_price)
-        signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
-        return {'status': get_rokada_status(), 'signals': signals}
-    return {'error': 'Status mora biti "on" ili "off"'}
-
-# @app.get('/set_rokada/{status}')
-# async def set_rokada(status: str):
-#     logger.info(f"Received request to set rokada status to: {status}")
-#     success = set_rokada_status(status)
-#     if success:
-#         current_price, walls, trend = await fetch_current_data()
-#         signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
-#         return {'status': get_rokada_status(), 'signals': signals}
-#     return {'error': 'Status mora biti "on" ili "off"'}
 
 
 
@@ -254,11 +301,11 @@ async def get_data():
         return cached_data['data']
 
     try:
-        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=100)
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=50)
         current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
         walls = filter_walls(orderbook, current_price)
         trend = detect_trend(orderbook, current_price)
-        signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())  # Dodato ()
+        signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
         exchange.options['defaultType'] = 'future'
         try:
             balance = await exchange.fetch_balance()
@@ -281,7 +328,7 @@ async def get_data():
             "balance": eth_balance,
             "balance_currency": "ETH",
             "extra_balances": {"BTC": btc_balance, "USDT": usdt_balance},
-            "rokada_status": get_rokada_status(),  # Dodato ()
+            "rokada_status": get_rokada_status(),
             "active_trades": active_trades
         }
         cached_data = {'data': data, 'timestamp': time.time()}
@@ -344,7 +391,6 @@ async def start_trade(signal_index: int):
         logger.error(f"Greška pri startovanju trejda: {str(e)}")
         return {'error': str(e)}
 
-
 @app.post('/start_bot')
 async def startBot(data: dict):
     global bot_running, leverage, trade_amount
@@ -364,6 +410,7 @@ async def startBot(data: dict):
     logger.info(f"Bot started with leverage={leverage}, amount={trade_amount}")
     return {'status': 'success', 'leverage': leverage, 'amount': trade_amount}
 
+
 @app.post('/stop_bot')
 async def stopBot():
     global bot_running
@@ -375,9 +422,36 @@ async def stopBot():
     logger.info("Bot stopped")
     return {'status': 'success'}
 
+@app.post('/set_rokada')
+async def set_rokada(data: dict):
+    status = data.get('status')
+    logger.info(f"Received request to set rokada status to: {status}")
+    success = set_rokada_status(status)
+    if success:
+        orderbook = await exchange.fetch_order_book('ETH/BTC', limit=50)
+        current_price = (float(orderbook['bids'][0][0]) + float(orderbook['asks'][0][0])) / 2
+        walls = filter_walls(orderbook, current_price)
+        trend = detect_trend(orderbook, current_price)
+        signals = generate_signals(current_price, walls, trend, rokada_status=get_rokada_status())
+        return {'status': get_rokada_status(), 'signals': signals}
+    return {'error': 'Status mora biti "on" ili "off"'}
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await exchange.close()
     logger.info("Exchange zatvoren prilikom gašenja aplikacije")
+
+
+# dodao mi AI od PyCharm
+@app.middleware("http")
+async def add_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/get_data":  # Add caching only for specific endpoints
+        response.headers["Cache-Control"] = "public, max-age=5"  # Cache for 5 seconds
+    return response
+
+#@app.on_event("startup")
+#async def startup_event():
+#    await exchange.close()
+#    logger.info("Provera balansa i ostatka aplikacije")

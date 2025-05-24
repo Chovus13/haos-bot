@@ -18,9 +18,9 @@ def filter_walls(orderbook, current_price, threshold=0.002):
     logger.info(f"Bids: {len(bids)}, Asks: {len(asks)}, Total bid volume: {total_bid_volume:.2f}, Total ask volume: {total_ask_volume:.2f}")
 
     support_walls = []
-    for i in range(len(bids) - 5):  # Smanjeno na 5
-        cluster_volumes = bid_volumes[i:i+5]
-        cluster_prices = bids[i:i+5, 0]
+    for i in range(len(bids) - 3):  # Smanjeno na 3
+        cluster_volumes = bid_volumes[i:i + 3]
+        cluster_prices = bids[i:i + 3, 0]
         cluster_volume = sum(cluster_volumes)
         price_spread = max(cluster_prices) - min(cluster_prices)
         logger.debug(f"Support cluster {i}: volume={cluster_volume:.2f}, price_spread={price_spread:.5f}")
@@ -31,9 +31,9 @@ def filter_walls(orderbook, current_price, threshold=0.002):
             logger.info(f"Support wall: price={avg_price:.5f}, volume={cluster_volume:.2f}")
 
     resistance_walls = []
-    for i in range(len(asks) - 5):  # Smanjeno na 5
-        cluster_volumes = ask_volumes[i:i+5]
-        cluster_prices = asks[i:i+5, 0]
+    for i in range(len(asks) - 3):  # Smanjeno na 3
+        cluster_volumes = ask_volumes[i:i + 3]
+        cluster_prices = asks[i:i + 3, 0]
         cluster_volume = sum(cluster_volumes)
         price_spread = max(cluster_prices) - min(cluster_prices)
         logger.debug(f"Resistance cluster {i}: volume={cluster_volume:.2f}, price_spread={price_spread:.5f}")
